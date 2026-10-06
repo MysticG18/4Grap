@@ -1,0 +1,1026 @@
+#include "raylib.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+
+/* =============================================================================
+ * 4 EN RAYA - version grafica (Raylib) del proyecto de consola original
+ *
+ * Este archivo unifica lo que antes estaba separado en:
+ *   main.c, game.c / game.h y player.c / player.h
+ *
+ * La logica (validarString, validarUser, cargaMatriz, ingresarFichas,
+ * calcularTurno, victoria) es la de Nuevo_6_3_Beta con los mismos nombres
+ * y la misma firma. Se dejo afuera todo lo que era solo de consola
+ * (menu por scanf, fgets, mascara, banner, etc.).
+ *
+ * Se reutiliza:
+ *   - la struct PLAYERS y las reglas de validacion de usuario/contrasena/ID,
+ *   - la logica de tablero y victoria; victoria() devuelve 0 = sigue,
+ *     1 = gano el jugador, 2 = empate (tablero lleno).
+ *
+ * Cambios de diseno respecto al original (pensados para una app grafica en
+ * vez de una consola):
+ *   - Los jugadores quedan guardados en disco (jugadores.dat) entre
+ *     ejecuciones, en vez de pedir "cuantos jugadores" al arrancar cada vez.
+ *   - Hay una pantalla de menu con "Registrarse" / "Iniciar sesion" en vez
+ *     del flujo secuencial por consola.
+ *   - El puntaje (Victory/Streak) se actualiza al terminar CADA partida,
+ *     asignado al jugador correcto. En el original, Victory solo se sumaba
+ *     si alguien abandonaba (nunca en una victoria real de 4 en linea) y el
+ *     Streak se le sumaba al jugador equivocado; ver FinalizarPartida().
+ *
+ * Orden del archivo:
+ *   1. Constantes y tipos
+ *   2. Modulo jugadores (persistencia, validaciones, registro, login)
+ *   3. Modulo juego (reglas del tablero)
+ *   4. Interfaz grafica (pantallas)
+ *   5. main
+ * ========================================================================= */
+
+/* ---------------------------------------------------------------------------
+ * 1. CONSTANTES Y TIPOS
+ * ------------------------------------------------------------------------- */
+
+/* ---------- Jugadores ---------- */
+#define MAX_NOMBRE        11     /* 10 caracteres + '\0', igual que el original */
+#define MAX_JUGADORES     900    /* mismo limite superior que el original (900) */
+#define ARCHIVO_JUGADORES "jugadores.dat"
+
+typedef struct {
+    int  idplayer;
+    char Player[MAX_NOMBRE];
+    char Password[MAX_NOMBRE];
+    int  Streak;
+    int  Victory;
+    int  PMatches;
+    int  GameCount;   /* se conserva por compatibilidad con la struct original; no se usa todavia */
+} PLAYERS;
+
+/* Resultado de intentar registrar un jugador nuevo */
+typedef enum {
+    REG_OK = 0,
+    REG_USUARIO_VACIO,
+    REG_USUARIO_LARGO,
+    REG_USUARIO_EXISTE,
+    REG_PASSWORD_VACIA,
+    REG_PASSWORD_LARGA,
+    REG_LIMITE_JUGADORES
+} ResultadoRegistro;
+
+/* Resultado de intentar iniciar sesion */
+typedef enum {
+    LOGIN_OK = 0,
+    LOGIN_USUARIO_NO_EXISTE,
+    LOGIN_PASSWORD_INCORRECTA
+} ResultadoLogin;
+
+/* ---------- Tablero ---------- */
+#define FILAS     6
+#define COLUMNAS  7
+
+/* ---------- Ventana y tablero grafico ---------- */
+#define ANCHO_VENTANA   960
+#define ALTO_VENTANA    720
+
+#define TAM_CELDA       90
+#define TABLERO_ANCHO   (COLUMNAS * TAM_CELDA)
+#define TABLERO_ALTO    (FILAS * TAM_CELDA)
+#define TABLERO_X       ((ANCHO_VENTANA - TABLERO_ANCHO) / 2)
+#define TABLERO_Y       190
+
+#define VELOCIDAD_CAIDA 900.0f /* pixeles por segundo, ficha cayendo */
+
+#define COLOR_FONDO   (Color){ 245, 247, 250, 255 }
+#define COLOR_TABLERO (Color){ 30, 90, 170, 255 }
+#define COLOR_J1      (Color){ 220, 60, 50, 255 }   /* rojo */
+#define COLOR_J2      (Color){ 240, 190, 40, 255 }  /* amarillo */
+
+typedef enum {
+    PANTALLA_MENU,
+    PANTALLA_REGISTRO,
+    PANTALLA_LOGIN_J1,
+    PANTALLA_LOGIN_J2,
+    PANTALLA_JUEGO,
+    PANTALLA_FIN
+} Pantalla;
+
+typedef struct {
+    Rectangle bounds;
+    char texto[MAX_NOMBRE];
+    int  longitud;
+    bool activo;
+    bool esPassword;
+} CampoTexto;
+
+/* ---------------------------------------------------------------------------
+ * 2. MODULO JUGADORES
+ *
+ * Persistencia: el archivo guarda primero un int con la cantidad de
+ * jugadores y despues el arreglo de structs tal cual (binario). Es un
+ * formato simple, suficiente para este proyecto.
+ * ------------------------------------------------------------------------- */
+
+/* Carga los jugadores guardados en ARCHIVO_JUGADORES. Devuelve la cantidad
+ * de jugadores cargados (0 si el archivo no existe todavia). */
+int CargarJugadores(PLAYERS players[], int maxJugadores) {
+
+    FILE *archivo = fopen(ARCHIVO_JUGADORES, "rb");
+    int cantJugadores = 0;
+
+    if (archivo == NULL) {
+        return 0; /* primera vez que se ejecuta el juego: todavia no hay archivo */
+    }
+
+    fread(&cantJugadores, sizeof(int), 1, archivo);
+
+    if (cantJugadores < 0) cantJugadores = 0;
+    if (cantJugadores > maxJugadores) cantJugadores = maxJugadores;
+
+    fread(players, sizeof(PLAYERS), cantJugadores, archivo);
+
+    fclose(archivo);
+    return cantJugadores;
+}
+
+/* Guarda el arreglo completo de jugadores en ARCHIVO_JUGADORES. */
+void GuardarJugadores(const PLAYERS players[], int cantJugadores) {
+
+    FILE *archivo = fopen(ARCHIVO_JUGADORES, "wb");
+
+    if (archivo == NULL) {
+        return; /* si no se pudo abrir el archivo simplemente no persiste;
+                    el juego sigue funcionando en memoria durante esta ejecucion */
+    }
+
+    fwrite(&cantJugadores, sizeof(int), 1, archivo);
+    fwrite(players, sizeof(PLAYERS), cantJugadores, archivo);
+
+    fclose(archivo);
+}
+
+/* ---------- Validaciones ---------- */
+
+/* 0 = valido, 1 = vacio, 2 = demasiado largo.
+ * En el original la comparacion era strlen == 1 (vacio) y strlen > 11
+ * (largo) porque el texto de fgets traia el '\n'. Aca el texto de la
+ * interfaz grafica no trae '\n', asi que vacio es strlen == 0 y largo es
+ * strlen > 10. */
+int validarString(char *InputStr) {
+    int valido;
+    if (strlen(InputStr) == 0) {
+        valido = 1;
+    } else if (strlen(InputStr) > 10) {
+        valido = 2;
+    } else {
+        valido = 0;
+    }
+    return valido;
+}
+
+/* Busca inputstr entre los jugadores. Si lo encuentra deja *validar1 = 1 y
+ * el indice en *ub; si no, *validar1 = 0. */
+void validarUser(char *inputstr, PLAYERS players[], int cantPlayers, int *validar1, int *ub) {
+    int i;
+    for (i = 0; i < cantPlayers; i++) {
+
+        if (strcmp(inputstr, players[i].Player) == 0) {
+
+            *validar1 = 1;
+            *ub = i;
+            i = cantPlayers;
+
+        } else {
+
+            *validar1 = 0;
+
+        }
+    }
+}
+
+/* Genera un ID de 3 digitos (100-999) que todavia no este en uso, igual
+ * que exigia validarID en el original. Con MAX_JUGADORES = 900 siempre
+ * hay uno libre. */
+static int GenerarIDUnico(const PLAYERS players[], int cantJugadores) {
+
+    for (int candidato = 100; candidato <= 999; candidato++) {
+
+        int enUso = 0;
+
+        for (int i = 0; i < cantJugadores; i++) {
+            if (players[i].idplayer == candidato) {
+                enUso = 1;
+                break;
+            }
+        }
+
+        if (!enUso) {
+            return candidato;
+        }
+    }
+
+    return -1; /* no deberia pasar nunca si cantJugadores < 900 */
+}
+
+/* Da de alta un nuevo jugador: valida usuario/contrasena (no vacios, hasta
+ * 10 caracteres, usuario no repetido -- mismas reglas que validarString /
+ * validarUser del original) y le asigna un ID de 3 digitos unico
+ * (equivalente a validarID). Si todo es correcto, lo agrega al arreglo,
+ * incrementa *cantJugadores y guarda el archivo. */
+ResultadoRegistro RegistrarJugador(PLAYERS players[], int *cantJugadores,
+                                    int maxJugadores, char *nombre,
+                                    char *password) {
+
+    if (*cantJugadores >= maxJugadores) {
+        return REG_LIMITE_JUGADORES;
+    }
+
+    int validacionNombre = validarString(nombre);
+    if (validacionNombre == 1) return REG_USUARIO_VACIO;
+    if (validacionNombre == 2) return REG_USUARIO_LARGO;
+
+    int validar = 0;
+    int ub;
+    validarUser(nombre, players, *cantJugadores, &validar, &ub);
+    if (validar == 1) {
+        return REG_USUARIO_EXISTE;
+    }
+
+    int validacionPassword = validarString(password);
+    if (validacionPassword == 1) return REG_PASSWORD_VACIA;
+    if (validacionPassword == 2) return REG_PASSWORD_LARGA;
+
+    int nuevoID = GenerarIDUnico(players, *cantJugadores);
+
+    PLAYERS nuevo;
+    nuevo.idplayer = nuevoID;
+    strcpy(nuevo.Player, nombre);
+    strcpy(nuevo.Password, password);
+    nuevo.Streak    = 0;
+    nuevo.Victory   = 0;
+    nuevo.PMatches  = 0;
+    nuevo.GameCount = 0;
+
+    players[*cantJugadores] = nuevo;
+    (*cantJugadores)++;
+
+    GuardarJugadores(players, *cantJugadores);
+
+    return REG_OK;
+}
+
+/* Valida usuario + contrasena para iniciar una partida. Si es correcto
+ * devuelve LOGIN_OK y deja el indice del jugador en *ubicacion. */
+ResultadoLogin ValidarLogin(char *nombre, char *password,
+                            PLAYERS players[], int cantJugadores,
+                            int *ubicacion) {
+
+    int validar = 0;
+    int ub = -1;
+
+    validarUser(nombre, players, cantJugadores, &validar, &ub);
+
+    if (validar == 0) {
+        return LOGIN_USUARIO_NO_EXISTE;
+    }
+
+    if (strcmp(password, players[ub].Password) != 0) {
+        return LOGIN_PASSWORD_INCORRECTA;
+    }
+
+    *ubicacion = ub;
+    return LOGIN_OK;
+}
+
+/* Texto en espanol para mostrar en pantalla segun el resultado. */
+const char *MensajeRegistro(ResultadoRegistro resultado) {
+
+    switch (resultado) {
+        case REG_OK:               return "Jugador registrado con exito.";
+        case REG_USUARIO_VACIO:    return "El usuario no puede estar vacio.";
+        case REG_USUARIO_LARGO:    return "El usuario debe tener hasta 10 caracteres.";
+        case REG_USUARIO_EXISTE:   return "Ese usuario ya existe.";
+        case REG_PASSWORD_VACIA:   return "La contrasena no puede estar vacia.";
+        case REG_PASSWORD_LARGA:   return "La contrasena debe tener hasta 10 caracteres.";
+        case REG_LIMITE_JUGADORES: return "Se alcanzo el limite de jugadores registrados.";
+        default:                   return "";
+    }
+}
+
+const char *MensajeLogin(ResultadoLogin resultado) {
+
+    switch (resultado) {
+        case LOGIN_OK:                    return "";
+        case LOGIN_USUARIO_NO_EXISTE:     return "Ese usuario no existe.";
+        case LOGIN_PASSWORD_INCORRECTA:   return "Contrasena incorrecta.";
+        default:                          return "";
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * 3. MODULO JUEGO
+ *
+ * Reglas del 4 en raya, tal cual la logica de Nuevo_6_3_Beta.
+ * ------------------------------------------------------------------------- */
+
+/* Devuelve 1 si la ficha entro, 2 si la columna estaba llena.
+ * pos es la columna elegida contando desde 1 (1..COLUMNAS). */
+int ingresarFichas(int tablero[][COLUMNAS], int turno, int pos) {
+
+    int estado = 0;
+    int pos2 = pos - 1;
+
+    if (tablero[0][pos2] == 0) {
+
+        for (int i = FILAS - 1; i >= 0 ; i--) {
+
+            if (tablero[i][pos2] == 0) {
+
+                tablero[i][pos2] = turno;
+                i = 0;
+
+            }
+        }
+
+        estado = 1;
+
+    } else {
+
+        estado = 2;
+    }
+    return estado;
+}
+
+void calcularTurno(int *turnoInput) {
+
+    if (*turnoInput == 1) {
+        *turnoInput = 2;
+    } else {
+        *turnoInput = 1;
+    }
+
+}
+
+void cargaMatriz(int inputMatriz[][COLUMNAS]) {
+
+    int i, j;
+
+    for(i = 0; i<FILAS; i++) {
+
+        for(j = 0; j<COLUMNAS; j++) {
+
+            inputMatriz[i][j] = 0;
+
+        }
+
+    }
+
+    return;
+}
+
+/* Devuelve 1 si "turno" tiene 4 en linea (horizontal, vertical o alguna de
+ * las dos diagonales), 2 si no gano nadie y el tablero esta lleno (empate),
+ * 0 si la partida sigue. */
+int victoria(int inputMatriz[][COLUMNAS],int turno) {
+    // recorrido horizontal
+
+    int victoria 	= 0;
+    bool hayCeros 	= false;
+    int i 		= 0;
+    int j 		= 0;
+
+    for (i = 0; i < FILAS ; i++) {
+
+        for (j = 0; j<COLUMNAS - 3; j++) {
+
+            if (  inputMatriz[i][j] == turno && inputMatriz[i][j+1] == turno && inputMatriz[i][j+2] == turno && inputMatriz[i][j+3] == turno   ) {
+
+                victoria = 1;
+            }
+
+        }
+    }
+
+
+
+    for (i = 0; i < FILAS - 3; i++) {
+
+        for (j = 0; j < COLUMNAS; j++) {
+
+            if ( inputMatriz[i][j] == turno && inputMatriz[i+1][j] == turno && inputMatriz[i+2][j] == turno && inputMatriz[i+3][j] == turno ) {
+
+                victoria = 1;
+            }
+
+
+        }
+    }
+
+    //recorido diagonal
+    for (int i = 0; i < FILAS - 3; i++) {
+        for (int j = 0; j < COLUMNAS - 3; j++) {
+            if ( (inputMatriz[i][j] == turno && inputMatriz[i+1][j+1] == turno) && (inputMatriz[i+2][j+2] == turno && inputMatriz[i+3][j+3] == turno) ) {
+
+                victoria = 1;
+
+            }
+        }
+    }
+
+    // 4. Verificacion Diagonal Ascendente (/)
+    for (int i = 3; i < FILAS; i++) {
+
+        for (int j = 0; j < COLUMNAS - 3; j++) {
+
+            if (inputMatriz[i][j] == turno && inputMatriz[i-1][j+1] == turno &&
+
+                    inputMatriz[i-2][j+2] == turno && inputMatriz[i-3][j+3] == turno) {
+                victoria = 1;
+
+            }
+        }
+
+    }
+
+    hayCeros = false;
+    if (victoria != 1) {
+
+        for (int i = 0 ; i < COLUMNAS ; i ++ ) {
+
+            if (inputMatriz[0][i] == 0 ) {
+                hayCeros = true;
+                i = COLUMNAS;
+            }
+
+        }
+
+        if (!hayCeros) {
+            victoria = 2;
+        }
+    }
+
+    return victoria;
+}
+
+/* ---------------------------------------------------------------------------
+ * 4. INTERFAZ GRAFICA
+ * ------------------------------------------------------------------------- */
+
+/* ---------- Estado global ---------- */
+static PLAYERS jugadores[MAX_JUGADORES];
+static int cantJugadores = 0;
+
+static Pantalla pantalla = PANTALLA_MENU;
+static bool salirJuego = false;
+
+static char mensaje[128] = "";
+static bool mensajeEsError = false;
+
+static CampoTexto campoUsuario;
+static CampoTexto campoPassword;
+
+static int ubicacion[2] = { -1, -1 };
+static int tablero[FILAS][COLUMNAS];
+static int turno = 1;
+static int mov1 = 0;
+static int mov2 = 0;
+static int ganador = -1; /* -1 = partida en curso, 0 = empate, 1/2 = gano ese jugador */
+
+static bool  animando     = false;
+static int   columnaAnim  = -1;
+static int   filaObjetivo = -1;
+static int   turnoAnim    = 1;
+static float yFichaAnim   = 0.0f;
+
+/* ---------------------------------------------------------------------------
+ * Utilidades de UI
+ * ------------------------------------------------------------------------- */
+
+static void ResetCampo(CampoTexto *campo) {
+    campo->texto[0] = '\0';
+    campo->longitud = 0;
+}
+
+static void ActualizarCampoTexto(CampoTexto *campo) {
+
+    if (!campo->activo) return;
+
+    int tecla = GetCharPressed();
+    while (tecla > 0) {
+        if (tecla >= 32 && tecla <= 125 && campo->longitud < MAX_NOMBRE - 1) {
+            campo->texto[campo->longitud] = (char)tecla;
+            campo->longitud++;
+            campo->texto[campo->longitud] = '\0';
+        }
+        tecla = GetCharPressed();
+    }
+
+    if (IsKeyPressed(KEY_BACKSPACE) && campo->longitud > 0) {
+        campo->longitud--;
+        campo->texto[campo->longitud] = '\0';
+    }
+}
+
+static void DibujarCampoTexto(CampoTexto *campo, const char *etiqueta) {
+
+    DrawText(etiqueta, (int)campo->bounds.x, (int)campo->bounds.y - 24, 18, DARKGRAY);
+
+    Color colorBorde = campo->activo ? (Color){ 40, 120, 200, 255 } : GRAY;
+    DrawRectangleRec(campo->bounds, RAYWHITE);
+    DrawRectangleLinesEx(campo->bounds, 2, colorBorde);
+
+    char textoVisible[MAX_NOMBRE];
+    if (campo->esPassword) {
+        int i = 0;
+        for (; i < campo->longitud; i++) textoVisible[i] = '*';
+        textoVisible[i] = '\0';
+    } else {
+        strcpy(textoVisible, campo->texto);
+    }
+
+    DrawText(textoVisible, (int)campo->bounds.x + 10, (int)campo->bounds.y + 10, 20, BLACK);
+
+    if (campo->activo && ((int)(GetTime() * 2) % 2 == 0)) {
+        int anchoTexto = MeasureText(textoVisible, 20);
+        DrawText("|", (int)campo->bounds.x + 12 + anchoTexto, (int)campo->bounds.y + 10, 20, BLACK);
+    }
+}
+
+static void ManejarClickCampo(CampoTexto *campoA, CampoTexto *campoB) {
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        campoA->activo = CheckCollisionPointRec(GetMousePosition(), campoA->bounds);
+        campoB->activo = CheckCollisionPointRec(GetMousePosition(), campoB->bounds);
+    }
+    if (IsKeyPressed(KEY_TAB)) {
+        bool actA = campoA->activo;
+        campoA->activo = !actA;
+        campoB->activo = actA;
+    }
+}
+
+static bool Boton(Rectangle bounds, const char *texto) {
+
+    Vector2 mouse = GetMousePosition();
+    bool sobreBoton = CheckCollisionPointRec(mouse, bounds);
+
+    Color colorFondo = sobreBoton ? (Color){ 50, 130, 210, 255 } : (Color){ 30, 100, 180, 255 };
+    DrawRectangleRounded(bounds, 0.25f, 8, colorFondo);
+
+    int anchoTexto = MeasureText(texto, 20);
+    DrawText(texto,
+             (int)(bounds.x + (bounds.width - anchoTexto) / 2),
+             (int)(bounds.y + (bounds.height - 20) / 2),
+             20, RAYWHITE);
+
+    return sobreBoton && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+}
+
+static void MostrarMensaje(const char *texto, bool esError) {
+    strncpy(mensaje, texto, sizeof(mensaje) - 1);
+    mensaje[sizeof(mensaje) - 1] = '\0';
+    mensajeEsError = esError;
+}
+
+static void DibujarMensaje(int x, int y) {
+    if (mensaje[0] != '\0') {
+        DrawText(mensaje, x, y, 18, mensajeEsError ? MAROON : (Color){ 20, 130, 60, 255 });
+    }
+}
+
+static void IrAMenu(void) {
+    pantalla = PANTALLA_MENU;
+    mensaje[0] = '\0';
+}
+
+/* ---------------------------------------------------------------------------
+ * Pantalla: Menu principal
+ * ------------------------------------------------------------------------- */
+
+static void PantallaMenu(void) {
+
+    const char *titulo = "4 EN RAYA";
+    DrawText(titulo, (ANCHO_VENTANA - MeasureText(titulo, 50)) / 2, 110, 50, COLOR_TABLERO);
+    DrawText("Grupo Eleven", (ANCHO_VENTANA - MeasureText("Grupo Eleven", 20)) / 2, 168, 20, GRAY);
+
+    Rectangle btnJugar     = { ANCHO_VENTANA / 2 - 140, 300, 280, 55 };
+    Rectangle btnRegistrar = { ANCHO_VENTANA / 2 - 140, 375, 280, 55 };
+    Rectangle btnSalir     = { ANCHO_VENTANA / 2 - 140, 450, 280, 55 };
+    if (Boton(btnJugar, "Iniciar sesion y jugar")) {
+        ResetCampo(&campoUsuario);
+        ResetCampo(&campoPassword);
+        campoUsuario.activo  = true;
+        campoPassword.activo = false;
+        mensaje[0] = '\0';
+        pantalla = PANTALLA_LOGIN_J1;
+    }
+
+    if (Boton(btnRegistrar, "Registrarse")) {
+        ResetCampo(&campoUsuario);
+        ResetCampo(&campoPassword);
+        campoUsuario.activo  = true;
+        campoPassword.activo = false;
+        mensaje[0] = '\0';
+        pantalla = PANTALLA_REGISTRO;
+    }
+
+    if (Boton(btnSalir, "Salir")) {
+        salirJuego = true;
+    }
+
+    char totalTexto[64];
+    snprintf(totalTexto, sizeof(totalTexto), "Jugadores registrados: %d", cantJugadores);
+    DrawText(totalTexto, (ANCHO_VENTANA - MeasureText(totalTexto, 16)) / 2, 530, 16, GRAY);
+
+    const char *credito = "jpdd  -  Xx_cvc_xX  -  vea";
+    DrawText(credito, (ANCHO_VENTANA - MeasureText(credito, 14)) / 2, ALTO_VENTANA - 30, 14, LIGHTGRAY);
+}
+
+/* ---------------------------------------------------------------------------
+ * Pantalla: Registro de un jugador nuevo
+ * ------------------------------------------------------------------------- */
+
+static void PantallaRegistro(void) {
+
+    DrawText("Registro de jugador", (ANCHO_VENTANA - MeasureText("Registro de jugador", 32)) / 2, 90, 32, COLOR_TABLERO);
+
+    campoUsuario.bounds  = (Rectangle){ ANCHO_VENTANA / 2 - 150, 220, 300, 40 };
+    campoPassword.bounds = (Rectangle){ ANCHO_VENTANA / 2 - 150, 300, 300, 40 };
+
+    ManejarClickCampo(&campoUsuario, &campoPassword);
+    ActualizarCampoTexto(&campoUsuario);
+    ActualizarCampoTexto(&campoPassword);
+
+    DibujarCampoTexto(&campoUsuario, "Usuario (hasta 10 caracteres)");
+    DibujarCampoTexto(&campoPassword, "Contrasena (hasta 10 caracteres)");
+
+    Rectangle btnRegistrar = { ANCHO_VENTANA / 2 - 150, 365, 300, 50 };
+    Rectangle btnVolver    = { ANCHO_VENTANA / 2 - 150, 430, 300, 45 };
+
+    bool enviar = Boton(btnRegistrar, "Registrar") || IsKeyPressed(KEY_ENTER);
+
+    if (enviar) {
+        ResultadoRegistro resultado = RegistrarJugador(jugadores, &cantJugadores, MAX_JUGADORES,
+                                                        campoUsuario.texto, campoPassword.texto);
+        if (resultado == REG_OK) {
+            char confirmacion[96];
+            snprintf(confirmacion, sizeof(confirmacion), "Listo! ID asignada: %d. Ya podes iniciar sesion.",
+                      jugadores[cantJugadores - 1].idplayer);
+            MostrarMensaje(confirmacion, false);
+            ResetCampo(&campoUsuario);
+            ResetCampo(&campoPassword);
+            campoUsuario.activo = true;
+        } else {
+            MostrarMensaje(MensajeRegistro(resultado), true);
+        }
+    }
+
+    if (Boton(btnVolver, "Volver al menu")) {
+        IrAMenu();
+    }
+
+    DibujarMensaje(ANCHO_VENTANA / 2 - 150, 500);
+}
+
+/* ---------------------------------------------------------------------------
+ * Pantallas: Login de jugador 1 y jugador 2 (para iniciar una partida)
+ * ------------------------------------------------------------------------- */
+
+static void IniciarPartida(void) {
+    cargaMatriz(tablero);
+    turno = 1;
+    mov1 = 0;
+    mov2 = 0;
+    ganador = -1;
+    animando = false;
+    jugadores[ubicacion[0]].PMatches++;
+    jugadores[ubicacion[1]].PMatches++;
+    pantalla = PANTALLA_JUEGO;
+}
+
+static void PantallaLogin(int numeroJugador) {
+
+    char titulo[32];
+    snprintf(titulo, sizeof(titulo), "Inicio de sesion - Jugador %d", numeroJugador);
+    DrawText(titulo, (ANCHO_VENTANA - MeasureText(titulo, 28)) / 2, 90, 28, COLOR_TABLERO);
+
+    campoUsuario.bounds  = (Rectangle){ ANCHO_VENTANA / 2 - 150, 220, 300, 40 };
+    campoPassword.bounds = (Rectangle){ ANCHO_VENTANA / 2 - 150, 300, 300, 40 };
+    campoPassword.esPassword = true;
+
+    ManejarClickCampo(&campoUsuario, &campoPassword);
+    ActualizarCampoTexto(&campoUsuario);
+    ActualizarCampoTexto(&campoPassword);
+
+    DibujarCampoTexto(&campoUsuario, "Usuario");
+    DibujarCampoTexto(&campoPassword, "Contrasena");
+
+    Rectangle btnEntrar = { ANCHO_VENTANA / 2 - 150, 365, 300, 50 };
+    Rectangle btnVolver = { ANCHO_VENTANA / 2 - 150, 430, 300, 45 };
+
+    bool enviar = Boton(btnEntrar, "Iniciar sesion") || IsKeyPressed(KEY_ENTER);
+
+    if (enviar) {
+
+        int idx;
+        ResultadoLogin resultado = ValidarLogin(campoUsuario.texto, campoPassword.texto,
+                                                jugadores, cantJugadores, &idx);
+
+        if (resultado != LOGIN_OK) {
+            MostrarMensaje(MensajeLogin(resultado), true);
+        } else if (numeroJugador == 2 && idx == ubicacion[0]) {
+            MostrarMensaje("Ese jugador ya esta jugando esta partida (Jugador 1).", true);
+        } else {
+
+            ubicacion[numeroJugador - 1] = idx;
+            mensaje[0] = '\0';
+            ResetCampo(&campoUsuario);
+            ResetCampo(&campoPassword);
+            campoUsuario.activo = true;
+
+            if (numeroJugador == 1) {
+                pantalla = PANTALLA_LOGIN_J2;
+            } else {
+                IniciarPartida();
+            }
+        }
+    }
+
+    if (Boton(btnVolver, "Volver al menu")) {
+        IrAMenu();
+    }
+
+    DibujarMensaje(ANCHO_VENTANA / 2 - 150, 500);
+}
+
+/* ---------------------------------------------------------------------------
+ * Pantalla: Tablero de juego
+ * ------------------------------------------------------------------------- */
+
+static int FilaDisponible(int columna) {
+    for (int i = FILAS - 1; i >= 0; i--) {
+        if (tablero[i][columna] == 0) return i;
+    }
+    return -1;
+}
+
+static void FinalizarPartida(int resultado) {
+
+    ganador = resultado;
+
+    /* Correccion respecto al original: aca SI se suma Victory en una
+     * victoria real (antes solo se sumaba si alguien abandonaba) y el
+     * Streak se le asigna al jugador que efectivamente gano, no al otro. */
+    if (ganador == 1) {
+        jugadores[ubicacion[0]].Victory++;
+        jugadores[ubicacion[0]].Streak++;
+        jugadores[ubicacion[1]].Streak = 0;
+    } else if (ganador == 2) {
+        jugadores[ubicacion[1]].Victory++;
+        jugadores[ubicacion[1]].Streak++;
+        jugadores[ubicacion[0]].Streak = 0;
+    } else {
+        jugadores[ubicacion[0]].Streak = 0;
+        jugadores[ubicacion[1]].Streak = 0;
+    }
+
+    GuardarJugadores(jugadores, cantJugadores);
+    pantalla = PANTALLA_FIN;
+}
+
+static void PantallaJuego(void) {
+
+    char turnoTexto[64];
+    snprintf(turnoTexto, sizeof(turnoTexto), "Turno de: %s",
+             jugadores[ubicacion[turno - 1]].Player);
+    DrawText(turnoTexto, (ANCHO_VENTANA - MeasureText(turnoTexto, 26)) / 2, 40, 26,
+              turno == 1 ? COLOR_J1 : (Color){ 200, 160, 20, 255 });
+
+    DrawText("Clic en una columna, o presiona 1-7. ESC para abandonar la partida.",
+              (ANCHO_VENTANA - MeasureText("Clic en una columna, o presiona 1-7. ESC para abandonar la partida.", 16)) / 2,
+              90, 16, GRAY);
+
+    /* --- Entrada del jugador --- */
+    Vector2 mouse = GetMousePosition();
+    int columnaElegida = -1;
+
+    if (!animando) {
+
+        if (mouse.x >= TABLERO_X && mouse.x < TABLERO_X + TABLERO_ANCHO &&
+            mouse.y >= TABLERO_Y - TAM_CELDA && mouse.y < TABLERO_Y + TABLERO_ALTO) {
+
+            int columnaHover = (int)((mouse.x - TABLERO_X) / TAM_CELDA);
+
+            /* ficha "fantasma" mostrando donde caeria */
+            int cx = TABLERO_X + columnaHover * TAM_CELDA + TAM_CELDA / 2;
+            DrawCircle(cx, TABLERO_Y - TAM_CELDA / 2, TAM_CELDA / 2 - 10,
+                       Fade(turno == 1 ? COLOR_J1 : COLOR_J2, 0.4f));
+
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                columnaElegida = columnaHover;
+            }
+        }
+
+        for (int i = 0; i < COLUMNAS; i++) {
+            if (IsKeyPressed(KEY_ONE + i)) {
+                columnaElegida = i;
+            }
+        }
+
+        if (columnaElegida >= 0 && columnaElegida < COLUMNAS) {
+
+            int fila = FilaDisponible(columnaElegida);
+
+            if (fila == -1) {
+                MostrarMensaje("Esa columna esta llena.", true);
+            } else {
+                mensaje[0] = '\0';
+                columnaAnim  = columnaElegida;
+                filaObjetivo = fila;
+                turnoAnim    = turno;
+                yFichaAnim   = (float)(TABLERO_Y - TAM_CELDA);
+                animando     = true;
+            }
+        }
+
+        if (IsKeyPressed(KEY_ESCAPE)) {
+            FinalizarPartida(3 - turno); /* el que abandona pierde */
+        }
+
+    } else {
+
+        float yObjetivo = (float)(TABLERO_Y + filaObjetivo * TAM_CELDA);
+        yFichaAnim += VELOCIDAD_CAIDA * GetFrameTime();
+
+        if (yFichaAnim >= yObjetivo) {
+
+            int estadoFichas;
+            int estadoVictoria;
+
+            yFichaAnim = yObjetivo;
+            animando = false;
+
+            estadoFichas = ingresarFichas(tablero, turnoAnim, columnaAnim + 1);
+
+            if (estadoFichas == 1) {
+
+                if (turnoAnim == 1) {
+                    mov1++;
+                } else {
+                    mov2++;
+                }
+
+                estadoVictoria = victoria(tablero, turnoAnim);
+
+                if (estadoVictoria == 1) {
+                    FinalizarPartida(turnoAnim);
+                } else if (estadoVictoria == 2) {
+                    FinalizarPartida(0);
+                } else {
+                    calcularTurno(&turno);
+                }
+
+            } else if (estadoFichas == 2) {
+
+                MostrarMensaje("La columna esta llena!", true);
+            }
+        }
+    }
+
+    /* --- Dibujo del tablero --- */
+    DrawRectangleRounded((Rectangle){ TABLERO_X, TABLERO_Y, TABLERO_ANCHO, TABLERO_ALTO }, 0.03f, 8, COLOR_TABLERO);
+
+    for (int i = 0; i < FILAS; i++) {
+        for (int j = 0; j < COLUMNAS; j++) {
+
+            int cx = TABLERO_X + j * TAM_CELDA + TAM_CELDA / 2;
+            int cy = TABLERO_Y + i * TAM_CELDA + TAM_CELDA / 2;
+            int radio = TAM_CELDA / 2 - 8;
+
+            Color color = COLOR_FONDO;
+            if (tablero[i][j] == 1) color = COLOR_J1;
+            else if (tablero[i][j] == 2) color = COLOR_J2;
+
+            DrawCircle(cx, cy, (float)radio, color);
+        }
+    }
+
+    /* --- Cantidad de movimientos de cada jugador (mov1 / mov2) --- */
+    char movTexto[32];
+
+    DrawText("Jugador 1", 20, TABLERO_Y, 18, COLOR_J1);
+    snprintf(movTexto, sizeof(movTexto), "Movimientos: %d", mov1);
+    DrawText(movTexto, 20, TABLERO_Y + 24, 16, DARKGRAY);
+
+    snprintf(movTexto, sizeof(movTexto), "Movimientos: %d", mov2);
+    DrawText("Jugador 2", ANCHO_VENTANA - 20 - MeasureText("Jugador 2", 18), TABLERO_Y, 18, (Color){ 200, 160, 20, 255 });
+    DrawText(movTexto, ANCHO_VENTANA - 20 - MeasureText(movTexto, 16), TABLERO_Y + 24, 16, DARKGRAY);
+
+    if (animando) {
+        int cx = TABLERO_X + columnaAnim * TAM_CELDA + TAM_CELDA / 2;
+        DrawCircle(cx, (int)yFichaAnim + TAM_CELDA / 2, TAM_CELDA / 2 - 8,
+                   turnoAnim == 1 ? COLOR_J1 : COLOR_J2);
+    }
+
+    Rectangle btnAbandonar = { ANCHO_VENTANA / 2 - 110, TABLERO_Y + TABLERO_ALTO + 20, 220, 45 };
+    if (!animando && Boton(btnAbandonar, "Abandonar partida")) {
+        FinalizarPartida(3 - turno);
+    }
+
+    DibujarMensaje(TABLERO_X, TABLERO_Y + TABLERO_ALTO + 75);
+}
+
+/* ---------------------------------------------------------------------------
+ * Pantalla: Fin de partida y estadisticas
+ * ------------------------------------------------------------------------- */
+
+static void PantallaFin(void) {
+
+    char resultadoTexto[80];
+    Color colorResultado;
+
+    if (ganador == 0) {
+        snprintf(resultadoTexto, sizeof(resultadoTexto), "Empate!");
+        colorResultado = GRAY;
+    } else {
+        int idx = ubicacion[ganador - 1];
+        snprintf(resultadoTexto, sizeof(resultadoTexto), "Gano %s!", jugadores[idx].Player);
+        colorResultado = ganador == 1 ? COLOR_J1 : (Color){ 200, 160, 20, 255 };
+    }
+
+    DrawText(resultadoTexto, (ANCHO_VENTANA - MeasureText(resultadoTexto, 40)) / 2, 90, 40, colorResultado);
+
+    DrawText("Estadisticas", (ANCHO_VENTANA - MeasureText("Estadisticas", 22)) / 2, 170, 22, DARKGRAY);
+
+    int filaY = 220;
+    DrawText("Jugador", ANCHO_VENTANA / 2 - 260, filaY, 18, DARKGRAY);
+    DrawText("Victorias", ANCHO_VENTANA / 2 - 60, filaY, 18, DARKGRAY);
+    DrawText("Racha", ANCHO_VENTANA / 2 + 60, filaY, 18, DARKGRAY);
+    DrawText("Partidas", ANCHO_VENTANA / 2 + 160, filaY, 18, DARKGRAY);
+
+    for (int i = 0; i < 2; i++) {
+
+        PLAYERS *jugador = &jugadores[ubicacion[i]];
+        int y = filaY + 35 + i * 32;
+
+        DrawText(jugador->Player, ANCHO_VENTANA / 2 - 260, y, 18, BLACK);
+
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", jugador->Victory);
+        DrawText(buf, ANCHO_VENTANA / 2 - 60, y, 18, BLACK);
+
+        snprintf(buf, sizeof(buf), "%d", jugador->Streak);
+        DrawText(buf, ANCHO_VENTANA / 2 + 60, y, 18, BLACK);
+
+        snprintf(buf, sizeof(buf), "%d", jugador->PMatches);
+        DrawText(buf, ANCHO_VENTANA / 2 + 160, y, 18, BLACK);
+    }
+
+    Rectangle btnRevancha = { ANCHO_VENTANA / 2 - 220, 420, 200, 50 };
+    Rectangle btnMenu     = { ANCHO_VENTANA / 2 + 20, 420, 200, 50 };
+
+    if (Boton(btnRevancha, "Revancha")) {
+        IniciarPartida();
+    }
+
+    if (Boton(btnMenu, "Volver al menu")) {
+        IrAMenu();
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * 5. MAIN
+ * ------------------------------------------------------------------------- */
+
+int main(void) {
+
+    InitWindow(ANCHO_VENTANA, ALTO_VENTANA, "4 en Raya - Raylib (Grupo Eleven)");
+    SetTargetFPS(240);
+
+    cantJugadores = CargarJugadores(jugadores, MAX_JUGADORES);
+
+    campoUsuario.bounds     = (Rectangle){ 0, 0, 300, 40 };
+    campoPassword.bounds    = (Rectangle){ 0, 0, 300, 40 };
+    campoPassword.esPassword = true;
+    ResetCampo(&campoUsuario);
+    ResetCampo(&campoPassword);
+
+    while (!WindowShouldClose() && !salirJuego) {
+
+        BeginDrawing();
+        ClearBackground(COLOR_FONDO);
+
+        switch (pantalla) {
+            case PANTALLA_MENU:      PantallaMenu();        break;
+            case PANTALLA_REGISTRO:  PantallaRegistro();    break;
+            case PANTALLA_LOGIN_J1:  PantallaLogin(1);      break;
+            case PANTALLA_LOGIN_J2:  PantallaLogin(2);      break;
+            case PANTALLA_JUEGO:     PantallaJuego();       break;
+            case PANTALLA_FIN:       PantallaFin();         break;
+        }
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
