@@ -1,0 +1,492 @@
+
+main.c
+#include <stdio.h>
+#include <string.h>
+//el string.h es para comparar el contenido o contar las letras de una palabra entera
+
+#define N 6
+#define M 7
+#define CANT_USUARIOS 4
+#define MAX_PARTIDAS 50
+#define CLAVE_MIN 6
+#define CLAVE_MAX 15
+#define MAX_FALTAS 3
+#define OP_LOGIN 1
+#define OP_JUGAR 2
+#define OP_ESTADISTICAS 3
+#define OP_SALIR 4
+
+//REGISTROS jugador y partida
+typedef struct {
+    char usuario[20];
+    char contrasena[20];
+    int partidasJugadas;
+    int partidasGanadas;
+    int rachaGanadora;
+    float porcentaje;
+} TJugador;
+
+typedef struct {
+    int idJugador1;
+    int idJugador2;
+    int movJugador1;
+    int movJugador2;
+    int turnos;
+    char motivoFin;   // 'V'victoria, 'E'empate, 'D'descalificacion
+    int idGanador;    // -1 si nadie gana
+} TPartida;
+
+//PONER TODAS LAS FUNC ARRIBA DEL MAIN XQ YA LO EMPECE ASI
+// 1. INICIALIZAR TABLERO
+void tablero_inicial(char T[N][M]) {
+    int i = 0, j = 0;
+
+    // Inicializamos todas las casillas con el guion '-'
+    for (i = 0; i < N; i++) {
+        for (j = 0; j < M; j++) {
+            T[i][j] = '-';
+        }
+    }
+}
+
+// 2. IMPRIMIR TABLERO
+void imprimir_tablero(char T[N][M]) {
+    int i = 0, j = 0;
+
+    printf("\n==== TABLERO DE JUEGO ====\n");
+        for (i = 0; i < N; i++) {
+        for (j = 0; j < M; j++) {
+            printf("|%c| ", T[i][j]);
+        }
+        printf("\n");
+    }
+    // num abajo del tablero de guia
+    printf(" 1   2   3   4   5   6   7 \n");
+    printf("==========================\n");
+}
+
+// 3. VERIFICAR CASILLA
+int casilla_ocupada(char T[N][M], int i, int j) {
+    int b = 0;
+    if (T[i][j] == '-') {
+        b = 0;
+    } else {
+        b = 1;
+    }
+    return b;
+}
+
+// 4. SIMULAR GRAVEDAD
+int soltar_ficha(char T[N][M], int c, char ficha_actual) {
+    int j = c - 1;
+    int i = N - 1;
+    int b = 0;
+
+    // Recorre de abajo hacia arriba mientras la bandera sea 0
+    while (i >= 0 && b == 0) {
+        if (casilla_ocupada(T, i, j) == 0) {
+            T[i][j] = ficha_actual; // Asignamos la ficha que nos paso el main directo
+            b = 1;                  // Ficha puesta, corta la busqueda
+        } else {
+            i = i - 1; // Sube una fila si esta ocupada
+        }
+    }
+
+    if (b == 0) {
+        printf("La columna esta llena. FALTA!\n");
+    }
+    return b;
+}
+
+// 5. PEDIR Y VERIFICAR TURNO (devuelve 1 si la jugad fue valida y 0 si fue falta (ya sea por fuera de rango o columna incorrecta))
+int verificar_ficha(char T[N][M], char ficha_actual) {
+    int c = 0;
+    int valida=0;
+
+    printf("\nIngrese una columna (1-7): ");
+        scanf("%d", &c);
+        if (c < 1 || c > 7) {
+            printf("Columna fuera de rango. FALTA!\n");
+        }else {
+            valida  = soltar_ficha(T, c, ficha_actual);
+        }
+        return valida;
+}
+
+// 6. REGISTRO DE USUARIOS
+void cargar_usuarios(TJugador lista[]) {
+    int i = 0;
+    char usuarios[CANT_USUARIOS][15] = {"Fel", "Pizzita", "eugeee", "angel"};
+    char contrasenias[CANT_USUARIOS][15]= {"fel123", "p1zz1tt4", "3ug333", "Ang3ll"};
+
+    for (i=0; i < CANT_USUARIOS; i++) {
+        strcpy(lista[i].usuario, usuarios[i]);
+        strcpy(lista[i].contrasena, contrasenias[i]);
+        lista[i].partidasJugadas=0;
+        lista[i].partidasGanadas=0;
+        lista[i].rachaGanadora=0;
+        lista[i].porcentaje=0;
+    }
+
+}
+int clave_valida(char clave[]) {
+    int largo= strlen(clave);
+    int b=0;
+
+    if (largo>=CLAVE_MIN && largo<=CLAVE_MAX) {
+        b=1;
+    }
+    return b;
+}
+
+// 7. INICIAR SESION
+int iniciar_sesion(TJugador lista[], int total, char user_ingresado[], char pass_ingresada[]) {
+    int i = 0;
+    int b = 0;
+    int pos = -1;
+
+
+    while (i < total && b == 0) {
+
+        if (strcmp(lista[i].usuario, user_ingresado) == 0 && strcmp(lista[i].contrasena, pass_ingresada) == 0) {
+            b = 1;     // datos bien
+            pos = i;
+        } else {
+            i = i + 1;
+        }
+    }
+    return pos;
+}
+
+// 8. VERIFICAR GANADOR RECTO (Horizontal y Vertical)
+int verificar_ganador_recto(char T[N][M], char ficha) {
+    int i = 0;
+    int j = 0;
+    int b = 0;
+
+    // busq horizpontal
+    while (i < N && b == 0) {
+        j = 0;
+        while (j < M - 3 && b == 0) {
+            if (T[i][j] == ficha && T[i][j+1] == ficha && T[i][j+2] == ficha && T[i][j+3] == ficha) {
+                b = 1;
+            } else {
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    // buusq vertical
+    i = 0;
+    while (i < N - 3 && b == 0) {
+        j = 0;
+        while (j < M && b == 0) {
+            if (T[i][j] == ficha && T[i+1][j] == ficha && T[i+2][j] == ficha && T[i+3][j] == ficha) {
+                b = 1;
+            } else {
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    return b;
+}
+
+// 9. VERIFICAR GANADOR DIAGONAL
+int verificar_ganador_diagonal(char T[N][M], char ficha) {
+    int i = 0;
+    int j = 0;
+    int b = 0;
+
+    //  BUSQUEDA DIAGONAL \ asi
+    while (i < N - 3 && b == 0) {
+        j = 0;
+        while (j < M - 3 && b == 0) {
+            if (T[i][j] == ficha && T[i+1][j+1] == ficha && T[i+2][j+2] == ficha && T[i+3][j+3] == ficha) {
+                b = 1;
+            } else {
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    // BUSQUEDA DIAGONAL / asi
+    i = 3;
+    while (i < N && b == 0) {
+        j = 0;
+        while (j < M - 3 && b == 0) {
+            if (T[i][j] == ficha && T[i-1][j+1] == ficha && T[i-2][j+2] == ficha && T[i-3][j+3] == ficha) {
+                b = 1;
+            } else {
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    return b;
+}
+
+// 10. VERIFICAR GANADOR PRINCIPAL (Agrupa las busquedas para mantener limpio el main)
+int verificar_ganador(char T[N][M], char ficha) {
+    int b = 0;
+
+    // 1ro: Busca victoria en lineas rectas (horizontal y vertical)
+    b = verificar_ganador_recto(T, ficha);
+
+    // 2do: Si no gano en recta (b == 0), busca en lineas diagonales
+    if (b == 0) {
+        b = verificar_ganador_diagonal(T, ficha);
+    }
+
+    return b;
+}
+
+// 11. GUARDAR DATOS DE PARTIDA Y ESTADISTICAS
+// resultados: 0=empate, 1=victoria del turno actual, 2= descalificacion, pierde el turno actual
+void guardar_datos_partida(TJugador jug[], TPartida part[], int *tot_part, int id1, int id2, int resultado, int turno_actual, int turnos_jugados) {
+    int pos = *tot_part;
+    int movimientos1 = -1;
+    int movimientos2 = -1;
+    int ganador1 = -1;
+    int perdedor1 = -1;
+
+    // sumar a las partidas jugadas
+    jug[id1].partidasJugadas = jug[id1].partidasJugadas + 1;
+    jug[id2].partidasJugadas = jug[id2].partidasJugadas + 1;
+
+    // movimientos q hizo cada uno
+    movimientos1 = (turnos_jugados + 1) / 2;
+    movimientos2 = turnos_jugados / 2;
+
+    // estructura de la partida
+    part[pos].idJugador1 = id1;
+    part[pos].idJugador2 = id2;
+    part[pos].movJugador1 = movimientos1;
+    part[pos].movJugador2 = movimientos2;
+    part[pos].turnos = turnos_jugados;
+
+    if (resultado == 0) {
+        part[pos].motivoFin= 'E';
+        part[pos].idGanador = -1;
+        jug[id1].rachaGanadora = 0;
+        jug[id2].rachaGanadora = 0;
+    }else{
+      if (resultado == 1) {
+        part[pos].motivoFin = 'V'; // Victoria
+
+        if (turno_actual == 1) {
+            part[pos].idGanador = id1;
+            jug[id1].partidasGanadas = jug[id1].partidasGanadas + 1;
+            jug[id1].rachaGanadora = jug[id1].rachaGanadora + 1;
+            jug[id2].rachaGanadora = 0;
+        } else {
+            part[pos].idGanador = id2;
+            jug[id2].partidasGanadas = jug[id2].partidasGanadas + 1;
+            jug[id2].rachaGanadora = jug[id2].rachaGanadora + 1;
+            jug[id1].rachaGanadora = 0;
+        }
+    }else {
+        part[pos].motivoFin = 'D';
+        if (turno_actual == 1) {
+            part[pos].idGanador = id2;
+            jug[id2].partidasGanadas = jug[id2].partidasGanadas + 1;
+            jug[id2].rachaGanadora = jug[id2].rachaGanadora + 1;
+        }else {
+            part[pos].idGanador = id1;
+            jug[id1].partidasGanadas = jug[id1].partidasGanadas + 1;
+            jug[id1].rachaGanadora = jug[id1].rachaGanadora + 1;
+        }
+    }
+    }
+    jug[id1].porcentaje = ((float)jug[id1].partidasGanadas / jug[id1].partidasJugadas) * 100.0;
+    jug[id2].porcentaje = ((float)jug[id2].partidasGanadas / jug[id2].partidasJugadas) * 100.0;
+
+    *tot_part = *tot_part + 1; 
+}
+
+//12  MOSTRAR LAS ESTADISTICAS DE LOS JUGADORES como partidas jugadas, rcha y porcentaje de victoriqs
+    void mostrar_estadisticas(TJugador lista[]) {
+        int i=0;
+
+        printf("\n------estadisticas------\n");
+        printf("%-10s, %-8s, %-8s %-6s %s\n", "USUARIO", "JUGADAS", "P. GANADAS", "RACHA", "% VICTORIAS");
+        for (i=0; i<CANT_USUARIOS; i++){
+            printf("%-10s, %-8d, %-8d %-6d %.1f%\n", lista[i].usuario, lista[i].partidasJugadas, lista[i].partidasGanadas, lista[i].rachaGanadora, lista[i].porcentaje);
+        }
+    }
+//13 MENU para mostrar menu juju
+void mostrar_menu(void) {
+    printf("\n==== MENU PRINCIPAL ====\n");
+    printf("1. Iniciar sesion\n");
+    printf("2. EMPEZAR PARTIDA\n");
+    printf("3. Ver estadisticas\n");
+    printf("4. Salir\n");
+    printf("Ingrese una opcion: ");
+}
+//14 OPCION INICIAR SESION ahora id1 e id2 van por referencia
+void opcion_iniciar_sesion(TJugador lista[], int *id1, int *id2) {
+    char user_temp[20];
+    char pass_temp[20];
+    int pos_logueada = -1;
+
+    if (*id1 != -1 && *id2 != -1) {
+        printf("Ya hay 2 jugadores listos para jugar\n");
+    } else {
+        printf("\n------INICIO DE SESION------\n");
+        printf("Ingrese su usuario: ");
+        scanf("%19s", user_temp);
+        printf("Ingrese su contrasenIa (entre %d y %d caracteres): ", CLAVE_MIN, CLAVE_MAX);
+        scanf("%19s", pass_temp);
+
+        if (clave_valida(pass_temp) == 0) {
+            printf("ERROR: la clavee debe tener entre %d y %d caracteres\n", CLAVE_MIN, CLAVE_MAX);
+        } else {
+            pos_logueada = iniciar_sesion(lista, CANT_USUARIOS, user_temp, pass_temp);
+            if (pos_logueada == -1) {
+                printf("ERROR: Usuario o contrasenia incorrectos\n");
+            } else if (pos_logueada == *id1) {
+                printf("ERROR: Ese Usuario ya inicio sesion\n");
+            } else {
+                printf("BIENVENIDO, %s !\n", lista[pos_logueada].usuario);
+                if (*id1 == -1) {
+                    *id1 = pos_logueada;
+                    printf("Asignado como Jugador 1!\n");
+                } else {
+                    *id2 = pos_logueada;
+                    printf("Asignado como Jugador 2\n");
+                }
+            }
+        }
+    }
+}
+
+//16 jugar turno
+// 0 = la partida sigue, 1 = este jugador gano, 2 = este jugador fue descalificado
+int jugar_turno(char T[N][M], char ficha, char nombre[], int *faltas, int *turnos_jugados) {
+    int estado = 0;
+    printf("\nTurno de %s (Ficha %c)\n", nombre, ficha);
+    if (verificar_ficha(T, ficha) == 1) {
+        *faltas = 0;
+        *turnos_jugados = *turnos_jugados + 1;
+        imprimir_tablero(T);
+        estado = verificar_ganador(T, ficha);
+    }
+    else {
+        *faltas = *faltas + 1;
+        printf("Falta %d de %d. Pierdes el turno\n", *faltas, MAX_FALTAS);
+        if (*faltas == MAX_FALTAS) {
+            estado = 2;
+        }
+    }
+    return estado;
+}
+
+//rESULTADOS DE LA PARTIDA
+void mostrar_resultado(int fin_juego, int turno_actual, char nombre1[], char nombre2[]) {
+    char *jugador_actual = nombre1;
+    char *otro_jugador = nombre2;
+
+    if (turno_actual == 2) {
+        jugador_actual = nombre2;
+        otro_jugador = nombre1;
+    }
+
+    if (fin_juego == 1) {
+        printf("\nFELICIDADES! %s GANO LA PARTIDA!\n", jugador_actual);
+    } else if (fin_juego == 2) {
+        printf("\n%s acumulo %d faltas y pierde la partida. GANA %s!\n", jugador_actual, MAX_FALTAS, otro_jugador);
+    } else {
+        printf("\nEl tablero esta lleno. La partida termina en EMPATE!\n");
+    }
+}
+
+//20 EMPEZAR Y JUGAR PARTIDA lol
+void jugar_partida(TJugador lista[], int id1, int id2, int *fin_juego, int *turno_actual, int *turnos_jugados) {
+    char T[N][M];
+    int faltas1 = 0;
+    int faltas2 = 0;
+
+    *fin_juego = 0;
+    *turno_actual = 1;
+    *turnos_jugados = 0;
+
+    printf("\n EMPIEZA EL JUEGOOO!\n");
+    tablero_inicial(T);
+    imprimir_tablero(T);
+    while (*fin_juego == 0 && *turnos_jugados < N * M) {
+        if (*turno_actual == 1) {
+            *fin_juego = jugar_turno(T, 'A', lista[id1].usuario, &faltas1, turnos_jugados);
+        }
+         else {
+            *fin_juego = jugar_turno(T, 'R', lista[id2].usuario, &faltas2, turnos_jugados);
+        }
+        if (*fin_juego == 0) {
+            if (*turno_actual == 1) {
+                *turno_actual=2;
+            }else {
+                *turno_actual=1;
+            }
+        }
+    }
+
+    mostrar_resultado(*fin_juego, *turno_actual, lista[id1].usuario, lista[id2].usuario);
+}
+
+//OPCION JUGARR
+void opcion_jugar(TJugador lista[], int *id1, int *id2, TPartida partidas[], int *total_partidas) {
+    int fin_juego = 0;
+    int turno_actual = 1;
+    int turnos_jugados = 0;
+
+    if (*id1 != -1 && *id2 != -1 && *total_partidas < MAX_PARTIDAS) {
+        jugar_partida(lista, *id1, *id2, &fin_juego, &turno_actual, &turnos_jugados);
+
+        guardar_datos_partida(lista, partidas, total_partidas, *id1, *id2, fin_juego, turno_actual, turnos_jugados);
+        printf("\nEstadisticas actualizadas y partida guardada en el registro!\n");
+        mostrar_estadisticas(lista);
+        *id1 = -1;
+        *id2 = -1;
+    } else {
+        printf("Faltan jugadores. Tienen que iniciar sesion los dos.\n");
+    }
+}
+
+//para ejecutar las opciones
+void ejecutar_opcion(int opcion, TJugador lista[], int *id1, int *id2, TPartida partidas[], int *total_partidas) {
+    if (opcion == OP_LOGIN) {
+        opcion_iniciar_sesion(lista, id1, id2);
+    } else if (opcion == OP_JUGAR) {
+        opcion_jugar(lista, id1, id2, partidas, total_partidas);
+    } else if (opcion == OP_ESTADISTICAS) {
+        mostrar_estadisticas(lista);
+    } else if (opcion == OP_SALIR) {
+        printf("Saliendo del juego...\n");
+    } else {
+        printf("Opcion invalida, intente de nuevo.\n");
+    }
+}
+
+//por fin el prog principal
+int main(void) {
+    TJugador lista_jugadores[CANT_USUARIOS];
+    TPartida lista_partidas[MAX_PARTIDAS];
+    int total_partidas = 0;
+
+    int id_jugador1 = -1;
+    int id_jugador2 = -1;
+    int opcion = 0;
+
+    cargar_usuarios(lista_jugadores);
+
+    do {
+        mostrar_menu();
+        scanf("ingrese una opcion", &opcion);
+        ejecutar_opcion(opcion, lista_jugadores, &id_jugador1, &id_jugador2, lista_partidas, &total_partidas);
+    } while (opcion != OP_SALIR);
+
+    return 0;
+}
