@@ -1,0 +1,127 @@
+#include <stdio.h>
+#define N 5
+typedef struct {
+int cant;
+int cod;
+float imp;
+}Tproductos;
+typedef enum{Cantidad,Codigo,Importe}Campos;
+int Busqueda(Tproductos vector[],int Dim,float Abuscar,Campos Motivo);
+void Ordenamieto (Tproductos vector[],int Dim,Tproductos Aux,Campos Motivo);
+
+int main()
+{    
+    Tproductos Aux;
+    Tproductos V[N] = {
+        {10, 101, 250.50},
+        {5,  102, 1200.00},
+        {20, 103, 75.25},
+        {8,  104, 430.75},
+        {15, 105, 99.99}
+    };
+    Campos Motivo;  
+    int num;
+    printf("Ingrese Por que campo va a Buscar \n");
+    printf("|1 ----- Codigo| |2 ----- Importe| |3 ----- Cantidad| \n");
+    scanf("%d",&num);
+    
+    float abuscar;
+    printf("que desea buscar?");
+    scanf("%f",&abuscar);
+    switch(num){
+        case 1: Motivo=Codigo;break;
+        case 2: Motivo=Importe;break;
+        case 3: Motivo=Cantidad;break;
+
+    }
+
+    
+    int pos; 
+     pos = Busqueda(V,N,abuscar,Motivo);
+     if(pos==-1){
+        printf("No existe producto con esta informacion");
+     }else{
+        printf("Codigo: %d \n",V[pos].cod);
+        printf("Cantidad: %d \n", V[pos].cant);
+        printf("Importe: %.2f \n",V[pos].imp);}
+    
+    /* printf("Ingrese de que forma desea ordenar de vector");
+    scanf("%d",&num);
+    if(num==1){printf("El vector ya esta ordenado de esa forma");
+    }else{
+    switch(num){
+        case 2: Motivo=Importe;break;
+        case 3: Motivo=Cantidad;break;
+    }*/
+
+     
+     Motivo=Importe;
+    Ordenamieto(V,N,Aux,Motivo);
+      printf("-------Por Importe--------\n");
+    for(int i=0;i<N;i++){
+
+        printf("-------------------\n");
+     printf("Codigo: %d \n",V[i].cod);
+        printf("Cantidad: %d \n", V[i].cant);
+        printf("Importe: %.2f \n",V[i].imp);
+    }
+    printf("------Por Cantidad-------\n");
+      Motivo=Cantidad;
+     Ordenamieto(V,N,Aux,Motivo);
+    for(int i=0;i<N;i++){
+        printf("-------------------\n");
+     printf("Codigo: %d \n",V[i].cod);
+        printf("Cantidad: %d \n", V[i].cant);
+        printf("Importe: %.2f \n",V[i].imp);
+    }
+}
+
+
+int Busqueda (Tproductos vector[],int Dim,float Abuscar,Campos Motivo){
+float busqueda1;
+int ubi;
+int b=0;
+for(int i=0;i<Dim && b==0;i++){
+    switch(Motivo){
+        case Codigo: busqueda1=vector[i].cod;break;
+        case Cantidad: busqueda1=vector[i].cant;break;
+        case Importe: busqueda1=vector[i].imp;break;
+    }
+    if(Abuscar==busqueda1){
+        ubi=i;
+        b=1;
+    }
+}
+if(b==0){
+    ubi=-1;
+}
+return ubi; 
+
+}
+
+
+void Ordenamieto (Tproductos vector[],int Dim,Tproductos Aux,Campos Motivo){
+float num1;
+float num2;
+int k=Dim-1;
+int b=0;
+do{
+b=0;
+
+for(int i=0;i<k;i++){
+    switch(Motivo){
+        case Codigo: num1=vector[i].cod; num2=vector[i+1].cod; break;
+        case Cantidad:num1=vector[i].cant;num2=vector[i+1].cant;break;
+        case Importe: num1=vector[i].imp;num2=vector[i+1].imp;break;
+    }
+    if(num1>num2){
+     Aux=vector[i];
+     vector[i]=vector[i+1];
+     vector[i+1]=Aux;
+     b=1;
+    }
+}
+k=k-1;
+}while(b==1);
+
+}
